@@ -53,6 +53,19 @@
         height: 20px;
         border-radius: 10px;
     }
+    #percent-label {
+        display: none;
+        margin-top: 8px;
+        font-size: 16px;
+        font-weight: bold;
+        color: #00c853;
+    }
+    #status-message {
+        margin-top: 10px;
+        color: #ff9800;
+        font-size: 15px;
+        min-height: 20px;
+    }
 </style>
 </head>
 <body>
@@ -62,6 +75,8 @@
 <input type="file" id="fileInput" accept=".mkv">
 <button id="convertBtn" disabled>Convert to MP4</button>
 <progress id="progress" value="0" max="100" style="display:none;"></progress>
+<span id="percent-label"></span>
+<div id="status-message"></div>
 
 <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.1/dist/ffmpeg.min.js"></script>
 <script>
@@ -71,11 +86,14 @@ const ffmpeg = createFFmpeg({ log: true });
 const fileInput = document.getElementById('fileInput');
 const convertBtn = document.getElementById('convertBtn');
 const progressBar = document.getElementById('progress');
+const percentLabel = document.getElementById('percent-label');
+const statusMessage = document.getElementById('status-message');
 let file;
 
 fileInput.addEventListener('change', (e) => {
     file = e.target.files[0];
     if (file) convertBtn.disabled = false;
+    statusMessage.textContent = '';
 });
 
 convertBtn.addEventListener('click', async () => {
@@ -83,30 +101,57 @@ convertBtn.addEventListener('click', async () => {
     convertBtn.disabled = true;
     progressBar.style.display = 'block';
     progressBar.value = 0;
+    percentLabel.style.display = 'inline';
+    percentLabel.textContent = '0%';
+    statusMessage.textContent = 'Loading FFmpeg...';
 
-    if (!ffmpeg.isLoaded()) {
-        await ffmpeg.load();
+    try {
+        if (!ffmpeg.isLoaded()) {
+            await ffmpeg.load();
+        }
+
+        statusMessage.textContent = 'Preparing file...';
+        ffmpeg.FS('writeFile', file.name, await fetchFile(file));
+
+        ffmpeg.setProgress(({ ratio }) => {
+            const percent = Math.round(ratio * 100);
+            progressBar.value = percent;
+            percentLabel.textContent = percent + '%';
+        });
+
+        const outputName = file.name.replace(/\.[^/.]+$/, ".mp4");
+
+        // Fast mode: try -c:a copy, fallback to -c:a aac if it fails
+        let success = false;
+        statusMessage.textContent = 'Converting (fast mode)...';
+        try {
+            await ffmpeg.run('-i', file.name, '-c:v', 'copy', '-c:a', 'copy', outputName);
+            success = true;
+        } catch (err) {
+            // Most likely Incompatible codec; fallback to AAC
+            statusMessage.textContent = 'Converting (re-encoding audio)...';
+            await ffmpeg.run('-i', file.name, '-c:v', 'copy', '-c:a', 'aac', outputName);
+            success = true;
+        }
+
+        statusMessage.textContent = 'Saving file...';
+        const data = ffmpeg.FS('readFile', outputName);
+        const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = outputName;
+        a.click();
+
+        statusMessage.textContent = 'Done!';
+    } catch (err) {
+        console.error(err);
+        statusMessage.textContent = 'An error occurred during conversion.';
+    } finally {
+        progressBar.style.display = 'none';
+        percentLabel.style.display = 'none';
+        convertBtn.disabled = false;
     }
-
-    ffmpeg.FS('writeFile', file.name, await fetchFile(file));
-
-    ffmpeg.setProgress(({ ratio }) => {
-        progressBar.value = ratio * 100;
-    });
-
-    const outputName = file.name.replace(/\.[^/.]+$/, ".mp4");
-    await ffmpeg.run('-i', file.name, '-c:v', 'copy', '-c:a', 'aac', outputName);
-
-    const data = ffmpeg.FS('readFile', outputName);
-    const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = outputName;
-    a.click();
-
-    progressBar.style.display = 'none';
-    convertBtn.disabled = false;
 });
 </script>
 
